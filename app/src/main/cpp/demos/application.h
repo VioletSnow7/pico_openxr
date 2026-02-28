@@ -73,6 +73,8 @@ typedef struct Extentions_tag{
 
 typedef void (*hapticCallback)(void *arg, int controllerIndex, float amplitude, float seconds, float frequency);
 
+class SceneUnderstanding; // 前置声明
+
 class IApplication {
 public:
     virtual ~IApplication() = default;
@@ -84,6 +86,8 @@ public:
     virtual void setHandJointLocation(XrHandJointLocationEXT* location) = 0;
     virtual void inputEvent(int leftright, const ApplicationEvent& event) = 0;
     virtual void renderFrame(const XrPosef& pose, const glm::mat4& project, const glm::mat4& view, int32_t eye) = 0;
+    // ★ 方案A：设置场景理解模块引用 ★
+    virtual void setSceneUnderstanding(std::shared_ptr<SceneUnderstanding> su) = 0;
 };
 
 struct Options;

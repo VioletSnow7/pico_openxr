@@ -14,6 +14,7 @@
 #include <cmath>
 #include <math.h>
 #include "demos/application.h"
+#include "demos/scene_understanding.h"
 
 namespace {
 
@@ -263,6 +264,12 @@ struct OpenXrProgram : IOpenXrProgram {
         //hand tracking
         extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
         extensions.push_back(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
+
+        // 方案A：场景理解扩展（如果设备不支持会导致闪退，故先关闭该逻辑，回退到 B+C
+        // auto sceneExts = SceneUnderstanding::GetRequiredExtensions();
+        // for (auto ext : sceneExts) {
+        //     extensions.push_back(ext);
+        // }
         XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
         createInfo.next = m_platformPlugin->GetInstanceCreateExtension();
         createInfo.enabledExtensionCount = (uint32_t)extensions.size();
@@ -879,6 +886,20 @@ struct OpenXrProgram : IOpenXrProgram {
             hapticActionInfo.action = thiz->m_input.hapticAction;
             hapticActionInfo.subactionPath = thiz->m_input.handSubactionPath[controllerIndex];
             CHECK_XRCMD(xrApplyHapticFeedback(thiz->m_session, &hapticActionInfo, (XrHapticBaseHeader*)&vibration));});
+
+        // ★ 方案A：初始化场景理解模块 ★
+        m_sceneUnderstanding = std::make_shared<SceneUnderstanding>();
+        if (m_sceneUnderstanding->initializeFunctionPointers(m_instance)) {
+            m_sceneUnderstanding->initialize(m_session, m_appSpace);
+            // 自动查询已有的场景数据（如果用户之前已经扫描过房间）
+            m_sceneUnderstanding->querySceneAnchors();
+            Log::Write(Log::Level::Info, "SceneUnderstanding: Module initialized, querying existing scene data...");
+        } else {
+            Log::Write(Log::Level::Warning, "SceneUnderstanding: Device does not support scene understanding. Using fallback (Plan B+C).");
+            m_sceneUnderstanding = nullptr;
+        }
+        // 将场景理解模块传递给 Application
+        m_application->setSceneUnderstanding(m_sceneUnderstanding);
     }
 
     void CreateSwapchains() override {
@@ -1005,6 +1026,10 @@ struct OpenXrProgram : IOpenXrProgram {
                     break;
                 case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
                 default: {
+                    // ★ 方案A：将未处理的事件转发给场景理解模块 ★
+                    if (m_sceneUnderstanding) {
+                        m_sceneUnderstanding->handleEvent(event);
+                    }
                     Log::Write(Log::Level::Verbose, Fmt("Ignoring event type %d", event->type));
                     break;
                 }
@@ -1348,58 +1373,109 @@ struct OpenXrProgram : IOpenXrProgram {
         }
     }
 
+    /**
+     * ★ OpenXR 帧渲染主函数 ★
+     * 
+     * 每帧被主循环调用一次，执行标准的 OpenXR 帧管线：
+     * xrWaitFrame → xrBeginFrame → 渲染内容 → xrEndFrame
+     *
+     * 关键概念：
+     * - xrWaitFrame: 等待 OpenXR 运行时指示可以开始渲染（帧同步）
+     * - xrBeginFrame: 标记帧渲染开始
+     * - xrEndFrame:   提交所有合成层到运行时进行合成显示
+     *
+     * 合成层包括：
+     * 1. ProjectionLayer → 应用渲染的左右眼内容
+     * 2. PassthroughLayer → 摄像头透视画面（如果开启）
+     */
     void RenderFrame() override {
         CHECK(m_session != XR_NULL_HANDLE);
+
+        // ---- 第1步：等待帧同步 ----
+        // xrWaitFrame 会阻塞当前线程，直到 OpenXR 运行时准备好接收下一帧
+        // frameState 包含预测的显示时间和是否需要渲染的标志
         XrFrameWaitInfo frameWaitInfo{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState frameState{XR_TYPE_FRAME_STATE};
         CHECK_XRCMD(xrWaitFrame(m_session, &frameWaitInfo, &frameState));
 
+        // ---- 第2步：标记帧开始 ----
         XrFrameBeginInfo frameBeginInfo{XR_TYPE_FRAME_BEGIN_INFO};
         CHECK_XRCMD(xrBeginFrame(m_session, &frameBeginInfo));
 
-        std::vector<XrCompositionLayerBaseHeader*> layers;
+        // ---- 第3步：渲染并收集合成层 ----
+        std::vector<XrCompositionLayerBaseHeader*> layers; // 所有合成层列表
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         std::vector<XrCompositionLayerProjectionView> projectionLayerViews;
+
+        // 仅在运行时明确要求渲染时才执行实际渲染
         if (frameState.shouldRender == XR_TRUE) {
             if (RenderLayer(frameState.predictedDisplayTime, projectionLayerViews, layer)) {
+                // 将投影层加入合成层列表（应用渲染的双眼内容）
                 layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer));
             }
         }
 
+        // 如果 Passthrough 透视已启用，添加透视合成层
+        // 注意：Passthrough层在投影层之后，实际显示时会作为背景层
+        // 由于 ProjectionLayer 使用 BLEND_TEXTURE_SOURCE_ALPHA_BIT，
+        // 透明部分会显示 Passthrough 内容（摄像头画面）
         if (m_extentions.activePassthrough) {
             XrCompositionLayerPassthroughFB compositionLayerPassthrough = {XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
             compositionLayerPassthrough.layerHandle = m_passthroughLayerReconstruction;
-            //passthrough_layer.layerHandle = m_passthroughLayer_project;
             compositionLayerPassthrough.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
             compositionLayerPassthrough.space = XR_NULL_HANDLE;
             layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&compositionLayerPassthrough));
         }
 
+        // ---- 第4步：提交帧到 OpenXR 运行时 ----
+        // 运行时会将所有合成层融合并显示到头显屏幕上
         XrFrameEndInfo frameEndInfo{XR_TYPE_FRAME_END_INFO};
-        frameEndInfo.displayTime = frameState.predictedDisplayTime;
-        frameEndInfo.environmentBlendMode = m_options.Parsed.EnvironmentBlendMode;
-        frameEndInfo.layerCount = (uint32_t)layers.size();
-        frameEndInfo.layers = layers.data();
+        frameEndInfo.displayTime = frameState.predictedDisplayTime;           // 此帧的预测显示时间
+        frameEndInfo.environmentBlendMode = m_options.Parsed.EnvironmentBlendMode; // 环境混合模式
+        frameEndInfo.layerCount = (uint32_t)layers.size();                    // 合成层数量
+        frameEndInfo.layers = layers.data();                                  // 合成层数据
         CHECK_XRCMD(xrEndFrame(m_session, &frameEndInfo));
     }
 
+    /**
+     * ★ 单帧渲染层逻辑 ★
+     * 
+     * 完成一帧内所有 XR 输入数据的获取和双眼立体渲染。
+     * 这是整个渲染流程中最复杂的函数，责任包括：
+     *
+     * 1. 获取当前帧的左右眼视图矩阵和投影矩阵
+     * 2. 获取左右手柄的空间位置，更新手柄模型姿态
+     * 3. 获取眼动追踪数据（如果启用）
+     * 4. 获取手部追踪关节数据，计算骨骼变换
+     * 5. 对每只眼睛执行交换链获取 → 渲染 → 释放流程
+     *
+     * @param predictedDisplayTime  OpenXR 运行时预测的显示时间（用于空间定位查询）
+     * @param projectionLayerViews  输出：左右眼的投影视图数据
+     * @param layer                 输出：投影合成层
+     * @return true=渲染成功，false=跟踪姿态无效
+     */
     bool RenderLayer(XrTime predictedDisplayTime, std::vector<XrCompositionLayerProjectionView>& projectionLayerViews, XrCompositionLayerProjection& layer) {
+        // ============================================================
+        // 第1部分：获取左右眼视图信息
+        // ============================================================
         XrResult res;
         XrViewState viewState{XR_TYPE_VIEW_STATE};
         uint32_t viewCapacityInput = (uint32_t)m_views.size();
         uint32_t viewCountOutput;
         XrViewLocateInfo viewLocateInfo{XR_TYPE_VIEW_LOCATE_INFO};
         viewLocateInfo.viewConfigurationType = m_options.Parsed.ViewConfigType;
-        viewLocateInfo.displayTime = predictedDisplayTime;
-        viewLocateInfo.space = m_appSpace;
+        viewLocateInfo.displayTime = predictedDisplayTime;  // 使用预测显示时间查询
+        viewLocateInfo.space = m_appSpace;                    // 在应用空间中定位
 
+        // 获取左右眼的视图数据（位置、方向、FOV）
         res = xrLocateViews(m_session, &viewLocateInfo, &viewState, viewCapacityInput, &viewCountOutput, m_views.data());
         CHECK_XRRESULT(res, "xrLocateViews");
+        // 如果头显跟踪姿态无效，跳过本帧渲染
         if ((viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) == 0 || (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) == 0) {
-            return false;  // There is no valid tracking poses for the views.
+            return false;
         }
 
-        // get ipd
+        // 计算瞳距 (IPD)：左右眼之间的距离，用于眼动追踪计算
         float ipd = sqrt(pow(abs(m_views[1].pose.position.x - m_views[0].pose.position.x), 2) + pow(abs(m_views[1].pose.position.y - m_views[0].pose.position.y), 2) + pow(abs(m_views[1].pose.position.z - m_views[0].pose.position.z), 2));
 
         CHECK(viewCountOutput == viewCapacityInput);
@@ -1408,34 +1484,50 @@ struct OpenXrProgram : IOpenXrProgram {
 
         projectionLayerViews.resize(viewCountOutput);
 
+        // ============================================================
+        // ★ 方案A：每帧更新场景平面位置 ★
+        // ============================================================
+        if (m_sceneUnderstanding && m_sceneUnderstanding->isSceneDataAvailable()) {
+            m_sceneUnderstanding->updatePlaneLocations(predictedDisplayTime);
+        }
+
+        // ============================================================
+        // 第2部分：获取左右手柄的空间位置
+        // ============================================================
         std::vector<XrPosef> handPose;
         for (auto hand : {Side::LEFT, Side::RIGHT}) {
             XrSpaceLocation spaceLocation{XR_TYPE_SPACE_LOCATION};
+            // 在应用空间中定位手柄的 aim 空间（手柄前端指向方向）
             res = xrLocateSpace(m_input.aimSpace[hand], m_appSpace, predictedDisplayTime, &spaceLocation);
             CHECK_XRRESULT(res, "xrLocateSpace");
             if (XR_UNQUALIFIED_SUCCESS(res)) {
                 if ((spaceLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0 &&
                     (spaceLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
                     handPose.push_back(spaceLocation.pose);
+                    // 将手柄姿态传递给 Application，用于更新手柄 3D 模型的位置和方向
                     m_application->setControllerPose(int(hand), spaceLocation.pose);
                 }
             }
         }
 
-        //eye tracking
+        // ============================================================
+        // 第3部分：获取眼动追踪数据（可选）
+        // ============================================================
         if (m_extentions.isSupportEyeTracking && m_extentions.activeEyeTracking) {
             if (m_input.gazeActive) {
                 XrEyeGazeSampleTimeEXT eyeGazeSampleTime{XR_TYPE_EYE_GAZE_SAMPLE_TIME_EXT};
                 XrSpaceLocation gazeLocation{XR_TYPE_SPACE_LOCATION, &eyeGazeSampleTime};
+                // 在应用空间中定位注视点空间
                 res = xrLocateSpace(m_input.gazeActionSpace, m_appSpace, predictedDisplayTime, &gazeLocation);
-                //Log::Write(Log::Level::Info, Fmt("gazeActionSpace pose(%f %f %f)  orientation(%f %f %f %f)", 
-                //                                gazeLocation.pose.position.x, gazeLocation.pose.position.y, gazeLocation.pose.position.z, 
-                //                                gazeLocation.pose.orientation.x, gazeLocation.pose.orientation.y, gazeLocation.pose.orientation.z, gazeLocation.pose.orientation.w));
+                // 将注视数据传给 Application 进行渲染
                 m_application->setGazeLocation(gazeLocation, m_views, ipd, res);
             }
         }
 
-        //hand tracking
+        // ============================================================
+        // 第4部分：获取手部追踪数据
+        // ============================================================
+        // 每只手 26 个关节点，包含位置和方向信息
         XrHandJointLocationEXT jointLocations[Side::COUNT][XR_HAND_JOINT_COUNT_EXT];
         for (auto hand : {Side::LEFT, Side::RIGHT}) {
             XrHandJointLocationsEXT locations{XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
@@ -1445,24 +1537,26 @@ struct OpenXrProgram : IOpenXrProgram {
             XrHandJointsLocateInfoEXT locateInfo{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
             locateInfo.baseSpace = m_appSpace;
             locateInfo.time = predictedDisplayTime;
+            // 调用手部追踪扩展 API
             XrResult res = xrLocateHandJointsEXT(m_handTracker[hand], &locateInfo, &locations);
             if (res != XR_SUCCESS) {
                 Log::Write(Log::Level::Error, Fmt("m_pfnXrLocateHandJointsEXT res %d", res));
             }
         }
+
+        // 检测左右手食指指尖是否双指捜合（距离 < 1cm）
         XrHandJointLocationEXT& leftIndexTip = jointLocations[Side::LEFT][XR_HAND_JOINT_INDEX_TIP_EXT];
         XrHandJointLocationEXT& rightIndexTip = jointLocations[Side::RIGHT][XR_HAND_JOINT_INDEX_TIP_EXT];
-        //Log::Write(Log::Level::Error, Fmt("leftIndexTip.locationFlags:%d, rightIndexTip.locationFlags %d", leftIndexTip.locationFlags, rightIndexTip.locationFlags));
         if ((leftIndexTip.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0 && (rightIndexTip.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0) {
             XrVector3f distance;
             XrVector3f_Sub(&distance, &leftIndexTip.pose.position, &rightIndexTip.pose.position);
             float len = XrVector3f_Length(&distance);
-            // bring center of index fingers to within 1cm. Probably fine for most humans, unless
-            // they have huge fingers.
             if (len < 0.01f) {
                 Log::Write(Log::Level::Error, Fmt("len %f", len));
             }
         }
+
+        // 对每个关节进行骨骼变换计算（父子关节旋转叠加）
         for (auto hand : {Side::LEFT, Side::RIGHT}) {
             for (int i = 0; i < XR_HAND_JOINT_COUNT_EXT; i++) {
                 XrHandJointLocationEXT& jointLocation = jointLocations[hand][i];
@@ -1470,68 +1564,80 @@ struct OpenXrProgram : IOpenXrProgram {
                     //-------------------------------------------------------------
                     XrHandJointLocationEXT reference_position = jointLocations[hand][1];
                     XrHandJointLocationEXT reference;
+                    // 确定当前关节的父关节（用于旋转叠加）
+                    // 关节 2/7/12/17/21 是每根手指的起始关节，它们的父关节是手掌 (1)
                     if (i == 2 || i == 7 || i == 12 || i == 17 || i == 21) {
-                        reference = jointLocations[hand][1];
+                        reference = jointLocations[hand][1]; // 父关节 = 手掌
                     } else {
-                        reference = jointLocations[hand][i - 1];
+                        reference = jointLocations[hand][i - 1]; // 父关节 = 前一个关节
                     }
                     if (i > 1) {
+                        // 将当前关节的旋转与父关节叠加，实现骨骼链式变换
                         XrQuaternionf orientation;
                         XrQuaternionf_Multiply(&orientation, &jointLocation.pose.orientation, &reference.pose.orientation);
                         jointLocation.pose.orientation = orientation;
-
-                        //jointLocation.pose.position.x = jointLocation.pose.position.x - reference_position.pose.position.x;
-                        //jointLocation.pose.position.y = jointLocation.pose.position.y - reference_position.pose.position.y;
-                        //jointLocation.pose.position.z = jointLocation.pose.position.z - reference_position.pose.position.z;
                     }
                     //--------------------------------------------------------------
                 }
             }
         }
+        // 将处理后的关节数据传递给 Application
         m_application->setHandJointLocation((XrHandJointLocationEXT*)jointLocations);
-        //end hand tracking
 
+        // 获取头部视图空间的位置和速度（可用于运动预测）
         XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
         XrSpaceLocation spaceLocation{XR_TYPE_SPACE_LOCATION, &velocity};
         res = xrLocateSpace(m_ViewSpace, m_appSpace, predictedDisplayTime, &spaceLocation);
         CHECK_XRRESULT(res, "xrLocateSpace");
 
-
+        // 保存左右眼姿态
         XrPosef pose[Side::COUNT];
         for (uint32_t i = 0; i < viewCountOutput; i++) {
             pose[i] = m_views[i].pose;
         }
 
-        // Render view to the appropriate part of the swapchain image.
+        // ============================================================
+        // 第5部分：双眼立体渲染
+        // ============================================================
+        // 对每只眼睛执行相同的渲染流程，分别写入各自的交换链图像
         for (uint32_t i = 0; i < viewCountOutput; i++) {
-            // Each view has a separate swapchain which is acquired, rendered to, and released.
-            const Swapchain viewSwapchain = m_swapchains[i];
+            const Swapchain viewSwapchain = m_swapchains[i]; // i=0:左眼, i=1:右眼
+
+            // (a) 获取交换链中的下一张可用图像
             XrSwapchainImageAcquireInfo acquireInfo{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             uint32_t swapchainImageIndex;
             CHECK_XRCMD(xrAcquireSwapchainImage(viewSwapchain.handle, &acquireInfo, &swapchainImageIndex));
 
+            // (b) 等待图像准备就绪（GPU 可能还在使用）
             XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-            waitInfo.timeout = XR_INFINITE_DURATION;
+            waitInfo.timeout = XR_INFINITE_DURATION;  // 无限等待
             CHECK_XRCMD(xrWaitSwapchainImage(viewSwapchain.handle, &waitInfo));
 
+            // (c) 填充投影视图信息（姿态、FOV、图像区域）
             projectionLayerViews[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-            projectionLayerViews[i].pose = pose[i];
-            projectionLayerViews[i].fov = m_views[i].fov;
+            projectionLayerViews[i].pose = pose[i];        // 眼睛姿态
+            projectionLayerViews[i].fov = m_views[i].fov;  // 视场角
             projectionLayerViews[i].subImage.swapchain = viewSwapchain.handle;
             projectionLayerViews[i].subImage.imageRect.offset = {0, 0};
             projectionLayerViews[i].subImage.imageRect.extent = {viewSwapchain.width, viewSwapchain.height};
 
             const XrSwapchainImageBaseHeader* const swapchainImage = m_swapchainImages[viewSwapchain.handle][swapchainImageIndex];
 
+            // (d) 调用图形插件渲染当前眼睛的视图
+            //     内部会绑定 FBO、设置视口、清屏，然后调用 Application::renderFrame()
             m_graphicsPlugin->RenderView(m_application, projectionLayerViews[i], swapchainImage, m_colorSwapchainFormat, i);
 
+            // (e) 释放交换链图像，返还给 OpenXR 运行时用于显示
             XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             CHECK_XRCMD(xrReleaseSwapchainImage(viewSwapchain.handle, &releaseInfo));
         }
 
-
-        layer.space = m_appSpace;
+        // ============================================================
+        // 第6部分：配置投影合成层
+        // ============================================================
+        layer.space = m_appSpace;  // 合成层的参考空间
         if (m_extentions.activePassthrough) {
+            // 启用 Alpha 混合，让渲染内容的透明部分显示 Passthrough 背景
             layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         }
         layer.viewCount = (uint32_t)projectionLayerViews.size();
@@ -1607,6 +1713,9 @@ struct OpenXrProgram : IOpenXrProgram {
     ApplicationEvent m_applicationEvent[Side::COUNT] = {0};
     DeviceType m_deviceType;
     uint32_t m_deviceROM;
+
+    // ★ 方案A：场景理解模块 ★
+    std::shared_ptr<SceneUnderstanding> m_sceneUnderstanding;
 
 };
 }  // namespace

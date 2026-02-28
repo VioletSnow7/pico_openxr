@@ -104,7 +104,8 @@ LOCAL_SRC_FILES := main.cpp \
                    demos/gui.cpp \
                    demos/text.cpp \
                    demos/player.cpp \
-                   demos/application.cpp
+                   demos/application.cpp \
+                   demos/scene_understanding.cpp
 
 LOCAL_LDLIBS := -llog -landroid -lGLESv3 -lEGL -lmediandk -laaudio
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
