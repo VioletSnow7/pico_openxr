@@ -5,7 +5,7 @@ apply plugin: 'com.android.application'
 apply from: "$projectDir/build_sdk.gradle"
 
 android {
-    ndkVersion '21.4.7075529' // current LTS atm
+    ndkVersion '28.2.13676358' // 与 libcadDataManager.a 编译时使用的 NDK r28c 兼容
 
     compileSdkVersion 29
     lint {

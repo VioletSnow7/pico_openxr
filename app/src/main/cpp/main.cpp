@@ -220,7 +220,7 @@ void android_main(struct android_app* app) {
                 // 如果应用未激活且 XR 会话未运行，则阻塞等待事件（省电）
                 // 否则立即返回（保证渲染帧率）
                 const int timeoutMilliseconds = (!appState.Resumed && !program->IsSessionRunning() && app->destroyRequested == 0) ? -1 : 0;
-                if (ALooper_pollAll(timeoutMilliseconds, nullptr, &events, (void**)&source) < 0) {
+                if (ALooper_pollOnce(timeoutMilliseconds, nullptr, &events, (void**)&source) < 0) {
                     break;  // 没有更多事件，退出事件处理循环
                 }
                 // 分发处理事件

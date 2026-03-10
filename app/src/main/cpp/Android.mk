@@ -12,6 +12,13 @@ LOCAL_MODULE := assimp
 LOCAL_SRC_FILES := $(LOCAL_PATH)/third/assimp/lib/$(TARGET_ARCH_ABI)/libassimp.so
 include $(PREBUILT_SHARED_LIBRARY)
 
+# cadDataManager library (shared .so 避免静态链接 curl/libc++ 内部依赖问题)
+include $(CLEAR_VARS)
+LOCAL_MODULE := cadDataManager
+LOCAL_SRC_FILES := $(LOCAL_PATH)/third/cadDataManager/lib/$(TARGET_ARCH_ABI)/libcadDataManager.so
+LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/third/cadDataManager/include
+include $(PREBUILT_SHARED_LIBRARY)
+
 # Add imgui library
 include $(CLEAR_VARS)
 LOCAL_MODULE := imgui
@@ -84,6 +91,7 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/openxr_loader/include
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/third
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/third/assimp/include
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/third/freetype-2.13.0/include
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/third/cadDataManager/include
 LOCAL_SRC_FILES := main.cpp \
                    logger.cpp \
                    platformplugin_factory.cpp \
@@ -105,11 +113,12 @@ LOCAL_SRC_FILES := main.cpp \
                    demos/text.cpp \
                    demos/player.cpp \
                    demos/application.cpp \
-                   demos/scene_understanding.cpp
+                   demos/scene_understanding.cpp \
+                   demos/cad_renderer.cpp
 
 LOCAL_LDLIBS := -llog -landroid -lGLESv3 -lEGL -lmediandk -laaudio
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
-LOCAL_SHARED_LIBRARIES := openxr_loader assimp imgui freetype
+LOCAL_SHARED_LIBRARIES := openxr_loader assimp imgui freetype cadDataManager
 include $(BUILD_SHARED_LIBRARY)
 
 $(call import-module, android/native_app_glue)

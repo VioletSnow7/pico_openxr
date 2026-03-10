@@ -13,7 +13,7 @@ struct Options {
 
     std::string EnvironmentBlendMode{"Opaque"};
 
-    std::string AppSpace{"Stage"};  // ★ 修改为 Stage，这样 Y=0 就在真实的物理地板上，而不是在头部的视线高度上
+    std::string AppSpace{"Stage"};  // 修改为 Stage，这样 Y=0 就在真实的物理地板上，而不是在头部的视线高度上
 
     struct {
         XrFormFactor FormFactor{XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY};
