@@ -86,8 +86,6 @@ public:
     virtual void setHandJointLocation(XrHandJointLocationEXT* location) = 0;
     virtual void inputEvent(int leftright, const ApplicationEvent& event) = 0;
     virtual void renderFrame(const XrPosef& pose, const glm::mat4& project, const glm::mat4& view, int32_t eye) = 0;
-    // ★ 方案A：设置场景理解模块引用 ★
-    virtual void setSceneUnderstanding(std::shared_ptr<SceneUnderstanding> su) = 0;
 };
 
 struct Options;

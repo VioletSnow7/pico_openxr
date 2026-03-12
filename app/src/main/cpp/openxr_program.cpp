@@ -886,20 +886,6 @@ struct OpenXrProgram : IOpenXrProgram {
             hapticActionInfo.action = thiz->m_input.hapticAction;
             hapticActionInfo.subactionPath = thiz->m_input.handSubactionPath[controllerIndex];
             CHECK_XRCMD(xrApplyHapticFeedback(thiz->m_session, &hapticActionInfo, (XrHapticBaseHeader*)&vibration));});
-
-        // ★ 方案A：初始化场景理解模块 ★
-        m_sceneUnderstanding = std::make_shared<SceneUnderstanding>();
-        if (m_sceneUnderstanding->initializeFunctionPointers(m_instance)) {
-            m_sceneUnderstanding->initialize(m_session, m_appSpace);
-            // 自动查询已有的场景数据（如果用户之前已经扫描过房间）
-            m_sceneUnderstanding->querySceneAnchors();
-            Log::Write(Log::Level::Info, "SceneUnderstanding: Module initialized, querying existing scene data...");
-        } else {
-            Log::Write(Log::Level::Warning, "SceneUnderstanding: Device does not support scene understanding. Using fallback (Plan B+C).");
-            m_sceneUnderstanding = nullptr;
-        }
-        // 将场景理解模块传递给 Application
-        m_application->setSceneUnderstanding(m_sceneUnderstanding);
     }
 
     void CreateSwapchains() override {
