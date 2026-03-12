@@ -65,7 +65,8 @@ namespace AppConfig {
         // 初始缩放：CAD 数据单位通常是毫米(mm)，XR 场景单位是米(m)
         // 1mm = 0.001m，所以默认缩放为 0.001
         // 如果模型太大/太小可在这里调整
-        float       scale       = 0.001f;
+        // 0.0001f代表缩小1000倍
+        float scale = 0.01f;
         // 初始旋转（四元数，默认无旋转）
         glm::quat   rotation    = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     } CAD;
@@ -251,6 +252,23 @@ bool Application::initialize(const XrInstance instance, const XrSession session,
             cadDataManager::DataInterface::setActiveDocumentData(modelFileName);
             infof("[CadLoader] Step 3: done");
 
+            // ---- Step 3.5: 加载材质数据 ----
+            auto matData = readFileFromAssets("JsonData/CockpitMaterial.json");
+            if (!matData.empty()) {
+                std::string tmpMatPath = "/sdcard/CockpitMaterial.json";
+                FILE* fp = fopen(tmpMatPath.c_str(), "wb");
+                if (fp) {
+                    fwrite(matData.data(), 1, matData.size(), fp);
+                    fclose(fp);
+                    infof("[CadLoader] Step 3.5: loadMaterialData(\"%s\") ...", tmpMatPath.c_str());
+                    cadDataManager::DataInterface::loadMaterialData(tmpMatPath);
+                } else {
+                    infof("[CadLoader] Step 3.5 Error: Failed to write %s", tmpMatPath.c_str());
+                }
+            } else {
+                infof("[CadLoader] Step 3.5 Warning: Failed to find JsonData/CockpitMaterial.json in assets");
+            }
+
             // ---- Step 4: getRenderInfoMap (推荐接口，按 protoId 分组) ----
             infof("[CadLoader] Step 4: getRenderInfoMap() ...");
             auto renderInfoMap = cadDataManager::DataInterface::getRenderInfoMap();
@@ -284,6 +302,12 @@ bool Application::initialize(const XrInstance instance, const XrSession session,
                 // ---- Step 5: loadFromRenderInfos ----
                 infof("[CadLoader] Step 5: loadFromRenderInfos(%zu) ...", allRenderInfos.size());
                 mCadRenderer->loadFromRenderInfos(allRenderInfos);
+                
+                // 将 AppConfig 里的设置应用给模型
+                mCadRenderer->setPosition(AppConfig::CAD.position);
+                mCadRenderer->setScale(AppConfig::CAD.scale);
+                mCadRenderer->setRotation(AppConfig::CAD.rotation);
+                
                 infof("[CadLoader] Step 5: DONE — model loaded and ready");
             }
         }
