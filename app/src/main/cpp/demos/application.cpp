@@ -84,7 +84,7 @@ public:
     virtual void setHandJointLocation(XrHandJointLocationEXT* location) override;
     virtual void inputEvent(int leftright, const ApplicationEvent& event) override;
     virtual void renderFrame(const XrPosef& pose, const glm::mat4& project, const glm::mat4& view, int32_t eye) override;
-    // ★ 方案A：场景理解接口 ★
+    // 场景理解接口
     virtual void setSceneUnderstanding(std::shared_ptr<SceneUnderstanding> su) override;
 private:
     void layout();
@@ -220,39 +220,39 @@ bool Application::initialize(const XrInstance instance, const XrSession session,
     mTextRender->initialize();
     mCubeRender->initialize();
 
-    // ========= ★ 初始化 CAD 渲染器 ★ =========
-    // 调试模式：每一步打印日志，通过 logcat -s CadLoader 观察
-    infof("[CadLoader] Step 0: mCadRenderer->initialize() ...");
+    // ========= 初始化 CAD 渲染器 =========
+    // 调试方式：每一步打印日志，通过 logcat -s CadLoader 观察
+    infof("[CadLoader] Step 1: mCadRenderer->initialize() ...");
     if (mCadRenderer->initialize()) {
-        infof("[CadLoader] Step 0: initialize OK");
+        infof("[CadLoader] Step 1: initialize OK");
 
-        // ---- Step 1: 从 assets 读取 .fb 文件 ----
+        // ---- Step 2: 从 assets 读取 .fb 文件 ----
         const char* assetPath = AppConfig::CAD.assetPath;
-        infof("[CadLoader] Step 1: readFileFromAssets(\"%s\") ...", assetPath);
+        infof("[CadLoader] Step 2: readFileFromAssets(\"%s\") ...", assetPath);
         auto fbData = readFileFromAssets(assetPath);
-        infof("[CadLoader] Step 1: done, size = %zu bytes", fbData.size());
+        infof("[CadLoader] Step 2: done, size = %zu bytes", fbData.size());
 
         if (fbData.empty()) {
-            infof("[CadLoader] Step 1 FAILED: asset empty! "
+            infof("[CadLoader] Step 2 FAILED: asset empty! "
                   "请确认文件在 app/src/main/assets/%s", assetPath);
         } else {
-            // ---- Step 2: parseModelData ----
+            // ---- Step 3: parseModelData ----
             const std::string modelFileName = AppConfig::CAD.modelName;
-            infof("[CadLoader] Step 2: parseModelData(\"%s\", data, %zu) ...",
+            infof("[CadLoader] Step 3: parseModelData(\"%s\", data, %zu) ...",
                   modelFileName.c_str(), fbData.size());
             cadDataManager::DataInterface::parseModelData(
                 modelFileName,
                 fbData.data(),
                 fbData.size()
             );
-            infof("[CadLoader] Step 2: parseModelData returned");
+            infof("[CadLoader] Step 3: parseModelData returned");
 
-            // ---- Step 3: setActiveDocumentData ----
-            infof("[CadLoader] Step 3: setActiveDocumentData(\"%s\") ...", modelFileName.c_str());
+            // ---- Step 4: setActiveDocumentData ----
+            infof("[CadLoader] Step 4: setActiveDocumentData(\"%s\") ...", modelFileName.c_str());
             cadDataManager::DataInterface::setActiveDocumentData(modelFileName);
-            infof("[CadLoader] Step 3: done");
+            infof("[CadLoader] Step 4 done");
 
-            // ---- Step 3.5: 加载材质数据 ----
+            // ---- Step 5: 加载材质数据 ----
             auto matData = readFileFromAssets("JsonData/CockpitMaterial.json");
             if (!matData.empty()) {
                 std::string tmpMatPath = "/sdcard/CockpitMaterial.json";
@@ -260,47 +260,47 @@ bool Application::initialize(const XrInstance instance, const XrSession session,
                 if (fp) {
                     fwrite(matData.data(), 1, matData.size(), fp);
                     fclose(fp);
-                    infof("[CadLoader] Step 3.5: loadMaterialData(\"%s\") ...", tmpMatPath.c_str());
+                    infof("[CadLoader] Step 5: loadMaterialData(\"%s\") ...", tmpMatPath.c_str());
                     cadDataManager::DataInterface::loadMaterialData(tmpMatPath);
                 } else {
-                    infof("[CadLoader] Step 3.5 Error: Failed to write %s", tmpMatPath.c_str());
+                    infof("[CadLoader] Step 5 Error: Failed to write %s", tmpMatPath.c_str());
                 }
             } else {
-                infof("[CadLoader] Step 3.5 Warning: Failed to find JsonData/CockpitMaterial.json in assets");
+                infof("[CadLoader] Step 5 Warning: Failed to find JsonData/CockpitMaterial.json in assets");
             }
 
-            // ---- Step 4: getRenderInfoMap (推荐接口，按 protoId 分组) ----
-            infof("[CadLoader] Step 4: getRenderInfoMap() ...");
+            // ---- Step 6: getRenderInfoMap (按 protoId 分组) ----
+            infof("[CadLoader] Step 6: getRenderInfoMap() ...");
             auto renderInfoMap = cadDataManager::DataInterface::getRenderInfoMap();
-            infof("[CadLoader] Step 4: got %zu proto groups", renderInfoMap.size());
+            infof("[CadLoader] Step 6: got %zu proto groups", renderInfoMap.size());
 
             if (renderInfoMap.empty()) {
-                // 也尝试一下 getRenderInfo()（旧接口）
-                infof("[CadLoader] Step 4b: trying getRenderInfo() ...");
+                // getRenderInfo()（旧接口）
+                infof("[CadLoader] Step 6b: trying getRenderInfo() ...");
                 auto ri = cadDataManager::DataInterface::getRenderInfo();
-                infof("[CadLoader] Step 4b: getRenderInfo returned %zu items", ri.size());
+                infof("[CadLoader] Step 6b: getRenderInfo returned %zu items", ri.size());
 
                 if (ri.empty()) {
-                    infof("[CadLoader] Step 4 WARNING: both APIs returned empty! "
+                    infof("[CadLoader] Step 6 WARNING: both APIs returned empty! "
                           "文件格式可能不匹配，或者 parseModelData 未能识别该 .fb 文件");
                 } else {
-                    infof("[CadLoader] Step 5: loadFromRenderInfos(%zu) ...", ri.size());
+                    infof("[CadLoader] Step 7: loadFromRenderInfos(%zu) ...", ri.size());
                     mCadRenderer->loadFromRenderInfos(ri);
-                    infof("[CadLoader] Step 5: DONE");
+                    infof("[CadLoader] Step 7: DONE");
                 }
             } else {
                 // 将所有 proto 的 RenderInfo 打平合并
                 std::vector<cadDataManager::RenderInfo> allRenderInfos;
                 for (auto& kv : renderInfoMap) {
-                    infof("[CadLoader] Step 4:   proto='%s', items=%zu",
+                    infof("[CadLoader] Step 6:   proto='%s', items=%zu",
                           kv.first.c_str(), kv.second.size());
                     allRenderInfos.insert(allRenderInfos.end(),
                                           kv.second.begin(), kv.second.end());
                 }
-                infof("[CadLoader] Step 4: total RenderInfo items = %zu", allRenderInfos.size());
+                infof("[CadLoader] Step 6: total RenderInfo items = %zu", allRenderInfos.size());
 
-                // ---- Step 5: loadFromRenderInfos ----
-                infof("[CadLoader] Step 5: loadFromRenderInfos(%zu) ...", allRenderInfos.size());
+                // ---- Step 7: loadFromRenderInfos ----
+                infof("[CadLoader] Step 7: loadFromRenderInfos(%zu) ...", allRenderInfos.size());
                 mCadRenderer->loadFromRenderInfos(allRenderInfos);
                 
                 // 将 AppConfig 里的设置应用给模型
@@ -308,20 +308,12 @@ bool Application::initialize(const XrInstance instance, const XrSession session,
                 mCadRenderer->setScale(AppConfig::CAD.scale);
                 mCadRenderer->setRotation(AppConfig::CAD.rotation);
                 
-                infof("[CadLoader] Step 5: DONE — model loaded and ready");
+                infof("[CadLoader] Step 7: DONE — model loaded and ready");
             }
         }
     } else {
-        infof("[CadLoader] Step 0 FAILED: initialize() returned false");
+        infof("[CadLoader] Step 1 FAILED: initialize() returned false");
     }
-
-    const XrGraphicsBindingOpenGLESAndroidKHR *binding = reinterpret_cast<const XrGraphicsBindingOpenGLESAndroidKHR*>(mGraphicsPlugin->GetGraphicsBinding());
-    mPlayer->initialize(binding->display);
-
-    getAllVideoFiles("/sdcard", mAllVideoFiles);
-
-    //copyFile("/sdcard/Pictures/Screenshots/20230426-105301.jpg", "/sdcard/Pictures/2.jpg");
-    //refreshMedia("/sdcard/Pictures/");
 
     return true;
 }
@@ -840,7 +832,7 @@ void Application::renderCadModel(const glm::mat4& project, const glm::mat4& view
 }
 
 /**
- * ★ 应用层主渲染函数 ★
+ * 应用层主渲染函数
  * 
  * 每帧调用两次（左眼一次、右眼一次），由 GraphicsPlugin::RenderView() 调用。
  * 按照固定顺序渲染所有可视元素：
@@ -850,39 +842,31 @@ void Application::renderCadModel(const glm::mat4& project, const glm::mat4& view
  * @param view    视图矩阵（从眼睛姿态的逆矩阵得出）
  * @param eye     当前渲染的眼睛索引（0=左眼, 1=右眼）
  *
- * 渲染顺序（从后到前）：
- * 1. layout()                → 计算所有 UI 元素的布局位置
- * 2. showDeviceInformation() → 渲染设备信息文字（右下方白色小字）
- * 3. Player::render()        → 渲染视频播放画面（如果正在播放）
- * 4. showDashboard()         → 渲染 ImGui 控制面板（如果 Dashboard 开启）
- * 5. renderEyeTracking()     → 渲染眼动追踪射线和坐标（如果眼动追踪已启用）
- * 6. Controller::render()    → 渲染左右手柄 3D 模型和激光射线
- * 7. renderHandTracking()    → 渲染手部追踪关节立方体（如果手部被检测到）
- * 8. renderPlaceableCube()   → 渲染可交互的 50cm 立方体（可抓取和放置）
  */
 void Application::renderFrame(const XrPosef& pose, const glm::mat4& project, const glm::mat4& view, int32_t eye) {
     // 1. 计算所有可视元素的空间布局（Dashboard面板、视频播放器的位置和大小）
-    layout();
+    // layout();
 
     // 2. 渲染设备信息文字（始终显示，位于右下方）
-    showDeviceInformation(project, view);
+    // showDeviceInformation(project, view);
 
     // 3. 渲染视频播放器画面（位于右前方，没有播放视频时不可见）
-    mPlayer->render(project, view, eye);
+    // mPlayer->render(project, view, eye);
 
     // 4. 渲染 Dashboard 控制面板（ImGui，包含刷新率/透视/眼动/视频选择等选项）
+    // 当前给关了
     if (mIsShowDashboard) {
         showDashboard(project, view);
     }
 
     // 5. 渲染眼动追踪指示器（红色射线 + 坐标文字，仅在眼动追踪启用时可见）
-    renderEyeTracking(project, view, eye);
+    // renderEyeTracking(project, view, eye);
 
     // 6. 渲染左右手柄 3D 模型（PICO4/Neo3 手柄模型 + 激光射线指针）
     mController->render(project, view);
 
     // 7. 渲染手部追踪可视化（每个关节一个1cm立方体，仅在裸手被追踪时可见）
-    renderHandTracking(project, view);
+    // renderHandTracking(project, view);
 
     // 渲染 CAD 模型
     renderCadModel(project, view);
